@@ -139,6 +139,7 @@ std::vector<uint8_t> serialize_download_request(const DownloadRequest& req);
 bool deserialize_download_request(const std::vector<uint8_t>& data, DownloadRequest& req);
 
 // 其他工具函数
+// 计算文件的哈希值
 std::string calculate_file_hash(const std::string& file_path);
 
 #endif // FILE_TRANSFER_PROTOCOL_H

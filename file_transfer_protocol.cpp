@@ -442,7 +442,6 @@ bool deserialize_download_request(const std::vector<uint8_t>& data, DownloadRequ
     return true;
 }
 
-
 std::string calculate_file_hash(const std::string& file_path) {
     std::ifstream file(file_path, std::ios::binary);
     if (!file) return "";
@@ -451,13 +450,14 @@ std::string calculate_file_hash(const std::string& file_path) {
     MD5_Init(&md5_context);
 
     char buffer[DATA_BLOCK_SIZE];
-    while (file.read(buffer, DATA_BLOCK_SIZE)) {
-        MD5_Update(&md5_context, buffer, file.gcount());
-    }
-    
-    // 处理最后一块数据（如果存在）
-    if (file.gcount() > 0) {
-        MD5_Update(&md5_context, buffer, file.gcount());
+    // 关键修复：循环不依赖read()的返回值，而是判断实际读取的字节数
+    while (true) {
+        file.read(buffer, DATA_BLOCK_SIZE);
+        size_t bytes_read = file.gcount(); // 记录本次实际读取的字节数
+        if (bytes_read == 0) {
+            break; // 读取到文件末尾，退出循环
+        }
+        MD5_Update(&md5_context, buffer, bytes_read); // 处理所有实际读取的数据
     }
 
     unsigned char hash[MD5_DIGEST_LENGTH];

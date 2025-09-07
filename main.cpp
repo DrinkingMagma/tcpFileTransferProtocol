@@ -7,7 +7,7 @@
 void run_server() {
     TCPServer server(12345);
     if (server.start()) {
-        std::cout << "Server is running. Press Enter to stop..." << std::endl;
+        std::cout << "main: Server is running. Press Enter to stop..." << std::endl;
         std::cin.get();
         server.stop();
     }
@@ -19,23 +19,23 @@ void run_client() {
 
     TCPClient client("127.0.0.1", 12345);
     if (client.connect_to_server()) {
-        std::cout << "Connected to server" << std::endl;
+        std::cout << "main: Connected to server" << std::endl;
 
         // 上传文件示例
-        std::string local_file = "STL Resource codes analyze.pdf";  // 替换为实际文件路径
+        std::string local_file = "test.pdf";
         std::string remote_file = "uploaded_large_file.pdf";
         
-        std::cout << "Starting file upload..." << std::endl;
+        std::cout << "main: Starting file upload..." << std::endl;
         bool success = client.upload_file(local_file, remote_file, 
             [](uint32_t current, uint32_t total) {
                 float progress = static_cast<float>(current) / total * 100;
-                std::cout << "Upload progress: " << progress << "%" << std::endl;
+                std::cout << "main: Upload progress: " << progress << "%" << std::endl;
             });
         
         if (success) {
-            std::cout << "File uploaded successfully" << std::endl;
+            std::cout << "main: File uploaded successfully" << std::endl;
         } else {
-            std::cout << "File upload failed" << std::endl;
+            std::cout << "main: File upload failed" << std::endl;
         }
 
         // 下载文件示例
@@ -44,12 +44,12 @@ void run_client() {
         // client.download_file(download_file, save_path,
         //     [](uint32_t current, uint32_t total) {
         //         float progress = static_cast<float>(current) / total * 100;
-        //         std::cout << "Download progress: " << progress << "%" << std::endl;
+        //         std::cout << "main: Download progress: " << progress << "%" << std::endl;
         //     });
 
         client.disconnect();
     } else {
-        std::cout << "Failed to connect to server" << std::endl;
+        std::cout << "main: Failed to connect to server" << std::endl;
     }
 }
 
