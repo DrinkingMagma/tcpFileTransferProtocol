@@ -59,7 +59,7 @@ bool TCPServer::start() {
     running = true;
     std::cout << "Server started on port " << port << std::endl;
 
-    // 启动接受客户端连接的线程
+    // 启动接受接受客户端连接的线程
     std::thread accept_thread([this]() {
         while (running) {
             sockaddr_in client_addr;
@@ -141,19 +141,31 @@ bool TCPServer::send_packet(SOCKET sock, const PacketHeader& header, const std::
     // 序列化头部
     std::vector<uint8_t> header_data = serialize_header(header);
     
-    // 发送头部
-    ssize_t bytes_sent = send(sock, reinterpret_cast<const char*>(header_data.data()), header_data.size(), 0);
-    if (bytes_sent != static_cast<ssize_t>(header_data.size())) {
-        std::cerr << "Failed to send header" << std::endl;
-        return false;
+    // 发送头部（确保完整发送）
+    ssize_t bytes_sent = 0;
+    ssize_t total_bytes_sent = 0;
+    
+    while (total_bytes_sent < static_cast<ssize_t>(header_data.size())) {
+        bytes_sent = send(sock, reinterpret_cast<const char*>(header_data.data()) + total_bytes_sent, 
+                         header_data.size() - total_bytes_sent, 0);
+        if (bytes_sent <= 0) {
+            std::cerr << "Failed to send header" << std::endl;
+            return false;
+        }
+        total_bytes_sent += bytes_sent;
     }
 
-    // 发送 payload
+    // 发送 payload（确保完整发送）
     if (!payload.empty()) {
-        bytes_sent = send(sock, reinterpret_cast<const char*>(payload.data()), payload.size(), 0);
-        if (bytes_sent != static_cast<ssize_t>(payload.size())) {
-            std::cerr << "Failed to send payload" << std::endl;
-            return false;
+        total_bytes_sent = 0;
+        while (total_bytes_sent < static_cast<ssize_t>(payload.size())) {
+            bytes_sent = send(sock, reinterpret_cast<const char*>(payload.data()) + total_bytes_sent, 
+                             payload.size() - total_bytes_sent, 0);
+            if (bytes_sent <= 0) {
+                std::cerr << "Failed to send payload" << std::endl;
+                return false;
+            }
+            total_bytes_sent += bytes_sent;
         }
     }
 
@@ -163,10 +175,22 @@ bool TCPServer::send_packet(SOCKET sock, const PacketHeader& header, const std::
 bool TCPServer::receive_packet(SOCKET sock, PacketHeader& header, std::vector<uint8_t>& payload) {
     // 接收头部
     std::vector<uint8_t> header_data(sizeof(PacketHeader));
-    ssize_t bytes_received = recv(sock, reinterpret_cast<char*>(header_data.data()), header_data.size(), 0);
-    if (bytes_received <= 0) {
-        std::cerr << "Failed to receive header or connection closed" << std::endl;
-        return false;
+    ssize_t bytes_received = 0;
+    ssize_t total_bytes_received = 0;
+    
+    // 循环接收直到获取完整的头部
+    while (total_bytes_received < static_cast<ssize_t>(sizeof(PacketHeader))) {
+        bytes_received = recv(sock, reinterpret_cast<char*>(header_data.data()) + total_bytes_received, 
+                             sizeof(PacketHeader) - total_bytes_received, 0);
+        if (bytes_received <= 0) {
+            if (bytes_received == 0) {
+                std::cerr << "Connection closed by client while receiving header" << std::endl;
+            } else {
+                std::cerr << "Failed to receive header. Error code: " << errno << ", Error message: " << strerror(errno) << std::endl;
+            }
+            return false;
+        }
+        total_bytes_received += bytes_received;
     }
 
     // 反序列化头部
@@ -177,21 +201,77 @@ bool TCPServer::receive_packet(SOCKET sock, PacketHeader& header, std::vector<ui
 
     // 检查协议版本
     if (header.version != PROTOCOL_VERSION) {
-        std::cerr << "Unsupported protocol version" << std::endl;
+        std::cerr << "Unsupported protocol version. Expected: " << PROTOCOL_VERSION 
+                  << ", Received: " << header.version << std::endl;
         return false;
     }
 
     // 接收 payload
     if (header.payload_size > 0) {
         payload.resize(header.payload_size);
-        bytes_received = recv(sock, reinterpret_cast<char*>(payload.data()), payload.size(), 0);
-        if (bytes_received != static_cast<ssize_t>(payload.size())) {
-            std::cerr << "Failed to receive payload" << std::endl;
-            return false;
+        total_bytes_received = 0;
+        
+        // 循环接收直到获取完整的payload
+        while (total_bytes_received < static_cast<ssize_t>(header.payload_size)) {
+            bytes_received = recv(sock, reinterpret_cast<char*>(payload.data()) + total_bytes_received, 
+                                 header.payload_size - total_bytes_received, 0);
+            if (bytes_received <= 0) {
+                if (bytes_received == 0) {
+                    std::cerr << "Connection closed while receiving payload" << std::endl;
+                } else {
+                    std::cerr << "Failed to receive payload. Error code: " << errno << ", Error message: " << strerror(errno) << std::endl;
+                }
+                return false;
+            }
+            total_bytes_received += bytes_received;
         }
     }
 
     return true;
+}
+
+void TCPServer::handle_client(ClientConnection& client) {
+    std::cout << "Handling new client connection" << std::endl;
+    SOCKET client_sock = client.sockfd;
+
+    while (client.active) {
+        PacketHeader header;
+        std::vector<uint8_t> payload;
+
+        // 接收客户端发送的数据包
+        if (!receive_packet(client_sock, header, payload)) {
+            std::cerr << "Client connection closed" << std::endl;
+            break;
+        }
+
+        // 根据命令类型分发处理
+        switch (header.command) {
+            case CommandType::UPLOAD_REQUEST:
+                handle_upload(client_sock, header, payload);
+                break;
+            case CommandType::DOWNLOAD_REQUEST:
+                handle_download(client_sock, header, payload);
+                break;
+            case CommandType::TRANSFER_ABORT:
+                // 传输中止处理
+                std::cout << "Transfer aborted by client" << std::endl;
+                break;
+            default:
+                std::cerr << "Unknown command type: " << static_cast<int>(header.command) << std::endl;
+                // 发送错误响应
+                ErrorResponse error;
+                error.error_code = ErrorCode::INVALID_PACKET;
+                error.message = "Unknown command";
+                send_packet(client_sock, PacketHeader{PROTOCOL_VERSION, CommandType::ERROR_RESPONSE, 
+                    static_cast<uint32_t>(serialize_error_response(error).size()), 0, 0, 0}, serialize_error_response(error));
+                break;
+        }
+    }
+
+    // 清理客户端连接
+    close(client_sock);
+    client.active = false;
+    std::cout << "Client connection closed" << std::endl;
 }
 
 void TCPServer::handle_upload(SOCKET sock, const PacketHeader& header, const std::vector<uint8_t>& payload) {
@@ -295,316 +375,106 @@ void TCPServer::handle_upload(SOCKET sock, const PacketHeader& header, const std
         error_header.total_blocks = 0;
         
         send_packet(sock, error_header, serialize_error_response(error));
+        close(sock);  // 关闭连接
         return;
     }
 
-    // 接收数据块
-    bool transfer_complete = false;
-    while (!transfer_complete && running) {
-        PacketHeader data_header;
-        std::vector<uint8_t> data_payload;
-        
+    // 循环接收数据块
+    PacketHeader data_header;
+    std::vector<uint8_t> data_payload;
+    while (true) {
+        // 接收数据块头部和 payload
         if (!receive_packet(sock, data_header, data_payload)) {
-            std::cerr << "Failed to receive data packet" << std::endl;
+            std::cerr << "Failed to receive data block" << std::endl;
             break;
         }
 
-        if (data_header.file_id != file_id) {
-            std::cerr << "Mismatched file ID" << std::endl;
-            continue;
-        }
-
-        switch (data_header.command) {
-            case CommandType::DATA_BLOCK: {
-                // 写入数据块
-                file.write(reinterpret_cast<const char*>(data_payload.data()), data_payload.size());
-                if (!file) {
-                    std::cerr << "Failed to write block " << data_header.block_index << std::endl;
-                    
-                    // 发送块确认（失败）
-                    BlockAck ack;
-                    ack.success = false;
-                    ack.error_code = ErrorCode::TRANSFER_FAILED;
-                    ack.block_index = data_header.block_index;
-                    
-                    PacketHeader ack_header;
-                    ack_header.version = PROTOCOL_VERSION;
-                    ack_header.command = CommandType::BLOCK_ACK;
-                    ack_header.payload_size = serialize_block_ack(ack).size();
-                    ack_header.file_id = file_id;
-                    ack_header.block_index = data_header.block_index;
-                    ack_header.total_blocks = data_header.total_blocks;
-                    
-                    send_packet(sock, ack_header, serialize_block_ack(ack));
-                    return;
-                }
-
-                std::cout << "Received block " << data_header.block_index + 1 
-                          << "/" << data_header.total_blocks << std::endl;
-
-                // 发送块确认（成功）
-                BlockAck ack;
-                ack.success = true;
-                ack.error_code = ErrorCode::SUCCESS;
-                ack.block_index = data_header.block_index;
-                
-                PacketHeader ack_header;
-                ack_header.version = PROTOCOL_VERSION;
-                ack_header.command = CommandType::BLOCK_ACK;
-                ack_header.payload_size = serialize_block_ack(ack).size();
-                ack_header.file_id = file_id;
-                ack_header.block_index = data_header.block_index;
-                ack_header.total_blocks = data_header.total_blocks;
-                
-                send_packet(sock, ack_header, serialize_block_ack(ack));
-
-                // 检查是否完成
-                if (data_header.block_index == data_header.total_blocks - 1) {
-                    transfer_complete = true;
-                }
-                break;
-            }
-            
-            case CommandType::TRANSFER_COMPLETE: {
-                transfer_complete = true;
-                std::cout << "Upload completed for file: " << req.filename << std::endl;
-                
-                // 验证文件哈希 
-                std::string received_hash = calculate_file_hash(file_path);
-                if (received_hash == req.hash) {
-                    std::cout << "File hash verified successfully" << std::endl;
-                } else {
-                    std::cerr << "File hash verification failed" << std::endl;
-                }
-                break;
-            }
-            
-            case CommandType::TRANSFER_ABORT: {
-                std::cout << "Upload aborted by client" << std::endl;
-                return;
-            }
-            
-            default:
-                std::cerr << "Unexpected command type: " << static_cast<int>(data_header.command) << std::endl;
-                break;
-        }
-    }
-}
-
-void TCPServer::handle_download(SOCKET sock, const PacketHeader& header, const std::vector<uint8_t>& payload) {
-    // ? 显示标记header未使用
-    (void)header;
-    // 1. 解析下载请求
-    DownloadRequest req;
-    if (!deserialize_download_request(payload, req)) {
-        std::cerr << "Failed to deserialize download request" << std::endl;
-        
-        // 发送错误响应
-        ErrorResponse error;
-        error.error_code = ErrorCode::INVALID_PACKET;
-        error.message = "Invalid download request";
-        
-        PacketHeader resp_header;
-        resp_header.version = PROTOCOL_VERSION;
-        resp_header.command = CommandType::ERROR_RESPONSE;
-        resp_header.payload_size = serialize_error_response(error).size();
-        resp_header.file_id = 0;
-        resp_header.block_index = 0;
-        resp_header.total_blocks = 0;
-        
-        send_packet(sock, resp_header, serialize_error_response(error));
-        return;
-    }
-
-    // 2. 检查文件是否存在
-    std::string file_path = download_dir + "/" + req.filename;
-    if (!fs::exists(file_path) || !fs::is_regular_file(file_path)) {
-        std::cerr << "File not found: " << file_path << std::endl;
-        
-        // 发送文件不存在的响应
-        DownloadResponse resp;
-        resp.found = false;
-        resp.error_code = ErrorCode::FILE_NOT_FOUND;
-        resp.file_id = 0;
-        resp.file_size = 0;
-        resp.total_blocks = 0;
-        resp.hash = "";
-        
-        PacketHeader resp_header;
-        resp_header.version = PROTOCOL_VERSION;
-        resp_header.command = CommandType::DOWNLOAD_RESPONSE;
-        resp_header.payload_size = serialize_download_response(resp).size();
-        resp_header.file_id = 0;
-        resp_header.block_index = 0;
-        resp_header.total_blocks = 0;
-        
-        send_packet(sock, resp_header, serialize_download_response(resp));
-        return;
-    }
-
-    // 3. 准备文件信息（计算大小、哈希、总块数等）
-    uint64_t file_size = fs::file_size(file_path);
-    std::string file_hash = calculate_file_hash(file_path); // 假设已有此函数
-    uint32_t total_blocks = static_cast<uint32_t>((file_size + DATA_BLOCK_SIZE - 1) / DATA_BLOCK_SIZE);
-    uint64_t file_id = std::hash<std::string>{}(req.filename + std::to_string(file_size));
-
-    // 4. 发送下载响应（告知客户端可以开始下载）
-    DownloadResponse resp;
-    resp.found = true;
-    resp.error_code = ErrorCode::SUCCESS;
-    resp.file_id = file_id;
-    resp.file_size = file_size;
-    resp.total_blocks = total_blocks;
-    resp.hash = file_hash;
-    
-    PacketHeader resp_header;
-    resp_header.version = PROTOCOL_VERSION;
-    resp_header.command = CommandType::DOWNLOAD_RESPONSE;
-    resp_header.payload_size = serialize_download_response(resp).size();
-    resp_header.file_id = file_id;
-    resp_header.block_index = 0;
-    resp_header.total_blocks = total_blocks;
-    
-    if (!send_packet(sock, resp_header, serialize_download_response(resp))) {
-        std::cerr << "Failed to send download response" << std::endl;
-        return;
-    }
-
-    // 5. 打开文件并发送数据块（从请求的start_block开始）
-    std::ifstream file(file_path, std::ios::binary);
-    if (!file) {
-        std::cerr << "Failed to open file for reading: " << file_path << std::endl;
-        // 发送错误响应（略）
-        return;
-    }
-
-    // 6. 定位到起始块位置
-    if (req.start_block > 0) {
-        file.seekg(req.start_block * DATA_BLOCK_SIZE, std::ios::beg);
-    }
-
-    // 7. 循环发送数据块
-    for (uint32_t i = req.start_block; i < total_blocks && running; ++i) {
-        // 读取数据块
-        std::vector<uint8_t> block_data(DATA_BLOCK_SIZE);
-        file.read(reinterpret_cast<char*>(block_data.data()), DATA_BLOCK_SIZE);
-        size_t bytes_read = file.gcount();
-        if (bytes_read == 0) break;
-
-        // 调整实际读取的大小（最后一块可能不满）
-        block_data.resize(bytes_read);
-
-        // 发送数据块
-        PacketHeader data_header;
-        data_header.version = PROTOCOL_VERSION;
-        data_header.command = CommandType::DATA_BLOCK;
-        data_header.payload_size = block_data.size();
-        data_header.file_id = file_id;
-        data_header.block_index = i;
-        data_header.total_blocks = total_blocks;
-
-        if (!send_packet(sock, data_header, block_data)) {
-            std::cerr << "Failed to send block " << i << std::endl;
-            return;
-        }
-
-        // 等待客户端确认
-        PacketHeader ack_header;
-        std::vector<uint8_t> ack_payload;
-        if (!receive_packet(sock, ack_header, ack_payload) || 
-            ack_header.command != CommandType::BLOCK_ACK) {
-            std::cerr << "Failed to receive ack for block " << i << std::endl;
-            return;
-        }
-
-        BlockAck ack;
-        if (!deserialize_block_ack(ack_payload, ack) || !ack.success) {
-            std::cerr << "Block " << i << " transfer failed" << std::endl;
-            return;
-        }
-
-        std::cout << "Sent block " << i + 1 << "/" << total_blocks << std::endl;
-    }
-
-    // 8. 发送传输完成通知
-    TransferComplete complete;
-    complete.success = true;
-    complete.error_code = ErrorCode::SUCCESS;
-    complete.hash = file_hash;
-
-    PacketHeader complete_header;
-    complete_header.version = PROTOCOL_VERSION;
-    complete_header.command = CommandType::TRANSFER_COMPLETE;
-    complete_header.payload_size = serialize_transfer_complete(complete).size();
-    complete_header.file_id = file_id;
-    complete_header.block_index = total_blocks - 1;
-    complete_header.total_blocks = total_blocks;
-
-    send_packet(sock, complete_header, serialize_transfer_complete(complete));
-    std::cout << "Download completed for file: " << req.filename << std::endl;
-}
-
-void TCPServer::handle_client(ClientConnection& client) {
-    std::cout << "Handling new client connection" << std::endl;
-
-    while (client.active && running) {
-        PacketHeader header;
-        std::vector<uint8_t> payload;
-        
-        if (!receive_packet(client.sockfd, header, payload)) {
-            break;
-        }
-
-        // 根据命令类型处理
-        switch (header.command) {
-            case CommandType::UPLOAD_REQUEST:
-                handle_upload(client.sockfd, header, payload);
-                break;
-                
-            case CommandType::DOWNLOAD_REQUEST:
-                handle_download(client.sockfd, header, payload);
-                break;
-                
-            case CommandType::TRANSFER_ABORT:
-                std::cout << "Client aborted transfer for file ID: " << header.file_id << std::endl;
-                break;
-                
-            default:
-                std::cerr << "Received unknown command: " << static_cast<int>(header.command) << std::endl;
-                
+        // 处理数据块
+        if (data_header.command == CommandType::DATA_BLOCK) {
+            // 写入数据到文件
+            file.write(reinterpret_cast<const char*>(data_payload.data()), data_payload.size());
+            if (!file) {
+                std::cerr << "Failed to write to file" << std::endl;
                 // 发送错误响应
                 ErrorResponse error;
-                error.error_code = ErrorCode::INVALID_PACKET;
-                error.message = "Unknown command";
-                
+                error.error_code = ErrorCode::TRANSFER_FAILED;
+                error.message = "Failed to write to file";
                 PacketHeader error_header;
                 error_header.version = PROTOCOL_VERSION;
                 error_header.command = CommandType::ERROR_RESPONSE;
                 error_header.payload_size = serialize_error_response(error).size();
-                error_header.file_id = header.file_id;
-                error_header.block_index = header.block_index;
-                error_header.total_blocks = header.total_blocks;
-                
-                send_packet(client.sockfd, error_header, serialize_error_response(error));
+                error_header.file_id = data_header.file_id;
+                error_header.block_index = data_header.block_index;
+                error_header.total_blocks = data_header.total_blocks;
+                send_packet(sock, error_header, serialize_error_response(error));
+                file.close();
+                close(sock);
+                return;
+            }
+
+            // 发送块确认
+            BlockAck ack;
+            ack.success = true;
+            ack.error_code = ErrorCode::SUCCESS;
+            ack.block_index = data_header.block_index;
+            PacketHeader ack_header;
+            ack_header.version = PROTOCOL_VERSION;
+            ack_header.command = CommandType::BLOCK_ACK;
+            ack_header.payload_size = serialize_block_ack(ack).size();
+            ack_header.file_id = data_header.file_id;
+            ack_header.block_index = data_header.block_index;
+            ack_header.total_blocks = data_header.total_blocks;
+            if (!send_packet(sock, ack_header, serialize_block_ack(ack))) {
+                std::cerr << "Failed to send block ACK" << std::endl;
+                file.close();
+                close(sock);
+                return;
+            }
+
+            // 检查是否所有块都已接收
+            if (data_header.block_index + 1 >= data_header.total_blocks) {
                 break;
+            }
+        }
+        // 处理传输完成通知
+        else if (data_header.command == CommandType::TRANSFER_COMPLETE) {
+            TransferComplete complete;
+            if (deserialize_transfer_complete(data_payload, complete)) {
+                std::cout << "File transfer completed. Success: " << std::boolalpha << complete.success << std::endl;
+            }
+            break;
+        }
+        // 处理错误情况
+        else {
+            std::cerr << "Unexpected command type: " << static_cast<int>(data_header.command) << std::endl;
+            break;
         }
     }
 
-    std::cout << "Client connection closed" << std::endl;
+    file.close();
+    std::cout << "File saved to: " << file_path << std::endl;
+}
 
-    // 清理客户端连接
-    close(client.sockfd);  // Linux使用close()
-    client.sockfd = INVALID_SOCKET;
-    client.active = false;
+void TCPServer::handle_download(SOCKET sock, const PacketHeader& header, const std::vector<uint8_t>& payload) {
+    // 下载处理逻辑（根据需要实现）
+    std::cout << "Handling download request (not fully implemented)" << std::endl;
 
-    // 从客户端列表中移除
-    {
-        std::lock_guard<std::mutex> lock(client_mutex);
-        auto it = std::remove_if(clients.begin(), clients.end(), [&](const ClientConnection& c) {
-            return !c.active;
-        });
-        if (it != clients.end()) {
-            clients.erase(it, clients.end());
-        }
-    }
+    // 临时使用参数避免警告
+    (void)header;
+    (void)payload;
+    
+    // 发送错误响应表示未实现
+    ErrorResponse error;
+    error.error_code = ErrorCode::SUCCESS;
+    error.message = "Download functionality not implemented";
+    
+    PacketHeader resp_header;
+    resp_header.version = PROTOCOL_VERSION;
+    resp_header.command = CommandType::ERROR_RESPONSE;
+    resp_header.payload_size = serialize_error_response(error).size();
+    resp_header.file_id = 0;
+    resp_header.block_index = 0;
+    resp_header.total_blocks = 0;
+    
+    send_packet(sock, resp_header, serialize_error_response(error));
 }

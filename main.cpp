@@ -22,8 +22,8 @@ void run_client() {
         std::cout << "Connected to server" << std::endl;
 
         // 上传文件示例
-        std::string local_file = "C++ Primer Plus 6.pdf";  // 替换为实际文件路径
-        std::string remote_file = "uploaded_large_file.dat";
+        std::string local_file = "STL Resource codes analyze.pdf";  // 替换为实际文件路径
+        std::string remote_file = "uploaded_large_file.pdf";
         
         std::cout << "Starting file upload..." << std::endl;
         bool success = client.upload_file(local_file, remote_file, 
