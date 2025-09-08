@@ -198,7 +198,7 @@ bool TCPServer::send_packet(SOCKET sock, const PacketHeader& header, const std::
  */
 bool TCPServer::receive_packet(SOCKET sock, PacketHeader& header, std::vector<uint8_t>& payload) {
     // 接收头部
-    std::vector<uint8_t> header_data(sizeof(PacketHeader));
+    std::vector<uint8_t> header_data(HEADER_SERIALIZED_SIZE);
     ssize_t bytes_received = recv(sock, reinterpret_cast<char*>(header_data.data()), header_data.size(), 0);
     if (bytes_received <= 0) {
         std::cerr << "server: Failed to receive header or connection closed" << std::endl;
@@ -217,6 +217,7 @@ bool TCPServer::receive_packet(SOCKET sock, PacketHeader& header, std::vector<ui
         return false;
     }
 
+    payload.resize(header.payload_size);
     // 接收数据载荷（如果有）
     if (header.payload_size > 0) {
         ssize_t total_received = 0;
@@ -224,6 +225,7 @@ bool TCPServer::receive_packet(SOCKET sock, PacketHeader& header, std::vector<ui
         size_t remaining = payload.size();
 
         while (static_cast<size_t>(total_received) < payload.size()) {
+            // ssize_t bytes_received = read(sock, data_ptr + total_received, remaining);
             ssize_t bytes_received = recv(sock, data_ptr + total_received, remaining, 0);
             
             if (bytes_received < 0) {
@@ -236,10 +238,12 @@ bool TCPServer::receive_packet(SOCKET sock, PacketHeader& header, std::vector<ui
             
             total_received += bytes_received;
             remaining -= bytes_received;
+            // std::cout << "bytes_received: " << bytes_received << "\tserver: total_received: " << total_received << "\tremaining: " << remaining << std::endl;
+
         }
 
         // 全部接收完成
-        std::cout << "server: Successfully received all " << total_received << " bytes" << std::endl;
+        // std::cout << "server: Successfully received all " << total_received << " bytes" << std::endl;
     }
 
     return true;
@@ -287,6 +291,7 @@ void TCPServer::handle_upload(SOCKET sock, const PacketHeader& header, const std
     uint32_t start_block = 0;
     if (fs::exists(file_path) && fs::is_regular_file(file_path)) {
         uint64_t existing_size = fs::file_size(file_path);
+        std::cout << "server: existing file size: " << existing_size << std::endl;
         if (existing_size < req.file_size) {
             // 文件存在但不完整，可以续传
             start_block = static_cast<uint32_t>(existing_size / DATA_BLOCK_SIZE);

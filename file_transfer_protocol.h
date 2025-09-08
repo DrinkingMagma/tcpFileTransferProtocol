@@ -12,6 +12,7 @@ const SOCKET INVALID_SOCKET = -1;
 const uint16_t PROTOCOL_VERSION = 1;
 const uint32_t MAX_PACKET_SIZE = 1024 * 1024; // 1MB
 const uint32_t DATA_BLOCK_SIZE = 1024 * 512;  // 512KB数据块
+constexpr size_t HEADER_SERIALIZED_SIZE = 23;
 
 
 // 命令类型

@@ -22,7 +22,7 @@ void run_client() {
         std::cout << "main: Connected to server" << std::endl;
 
         // 上传文件示例
-        std::string local_file = "test.pdf";
+        std::string local_file = "test_big.pdf";
         std::string remote_file = "uploaded_large_file.pdf";
         
         std::cout << "main: Starting file upload..." << std::endl;
@@ -39,13 +39,19 @@ void run_client() {
         }
 
         // 下载文件示例
-        // std::string download_file = "uploaded_large_file.dat";
-        // std::string save_path = "downloaded_large_file.dat";
-        // client.download_file(download_file, save_path,
+        // std::string download_file = "test_small.pdf";
+        // std::string save_path = "test_download.pdf";
+        // std::cout << "main: Starting file download..." << std::endl;
+        // bool success = client.download_file(download_file, save_path,
         //     [](uint32_t current, uint32_t total) {
         //         float progress = static_cast<float>(current) / total * 100;
         //         std::cout << "main: Download progress: " << progress << "%" << std::endl;
         //     });
+        // if (success) {
+        //     std::cout << "main: File download successfully" << std::endl;
+        // } else {
+        //     std::cout << "main: File download failed" << std::endl;
+        // }
 
         client.disconnect();
     } else {

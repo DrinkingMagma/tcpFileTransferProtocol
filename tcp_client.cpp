@@ -7,6 +7,7 @@
 #include <openssl/md5.h> // 需要OpenSSL库
 #include <cstring>       // 添加cstring头文件
 #include <iomanip>       // 添加iomanip头文件
+#include <netinet/tcp.h>
 
 namespace fs = std::filesystem;
 
@@ -49,12 +50,17 @@ bool TCPClient::connect_to_server() {
         return false;
     }
 
+    // // 禁用 Nagle 算法, by lzy
+    // int flag = 1;
+    // setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(int));
+
     connected = true;
     return true;
 }
 
 void TCPClient::disconnect() {
     if (connected && sockfd != INVALID_SOCKET) {
+        std::cerr << "client: Disconnected from server" << std::endl;
         close(sockfd);  // Linux使用close()
         sockfd = INVALID_SOCKET;
         connected = false;
@@ -64,11 +70,12 @@ void TCPClient::disconnect() {
 bool TCPClient::send_packet(const PacketHeader& header, const std::vector<uint8_t>& payload) {
     if (!connected) return false;
 
+    UploadRequest req;
+    deserialize_upload_request(payload, req);
+
+
     // 序列化头部
     std::vector<uint8_t> header_data = serialize_header(header);
-    
-    std::cout << "client: header size: " << header_data.size() << " bytes" << std::endl;    // 23 bytes
-    std::cout << "client: payload size: " << payload.size() << " bytes" << std::endl;       // 71 bytes
     
     // 发送头部
     ssize_t bytes_sent = send(sockfd, reinterpret_cast<const char*>(header_data.data()), header_data.size(), 0);
@@ -77,18 +84,22 @@ bool TCPClient::send_packet(const PacketHeader& header, const std::vector<uint8_
         return false;
     }
 
-    std::cout << "client: payload size: " << payload.size() << " bytes" << std::endl;       // 71 bytes
-    std::cout << "client: payload.data() : |" << payload.data()  << "|" << std::endl;
     // 发送 payload
     if (!payload.empty()) {
-        bytes_sent = send(sockfd, reinterpret_cast<const char*>(payload.data()), payload.size(), 0);
-        if (bytes_sent != static_cast<ssize_t>(payload.size())) {
-            std::cerr << "client: Failed to send payload" << std::endl;
-            return false;
+        ssize_t total_sent = 0;
+        const char* data_ptr = reinterpret_cast<const char*>(payload.data());
+        size_t remaining = payload.size();
+
+        while (remaining > 0) {
+            ssize_t sent = send(sockfd, data_ptr + total_sent, remaining, 0);
+            if (sent <= 0) {
+                std::cerr << "client: send error: " << strerror(errno) << std::endl;
+                return false;
+            }
+            total_sent += sent;
+            remaining -= sent;
         }
     }
-    std::cout << "client: bytes sent: " << bytes_sent << " bytes" << std::endl;
-    std::cout << "client: payload size: " << payload.size() << " bytes" << std::endl;       // 71 bytes 
 
     return true;
 }
@@ -97,7 +108,7 @@ bool TCPClient::receive_packet(PacketHeader& header, std::vector<uint8_t>& paylo
     if (!connected) return false;
 
     // 接收头部
-    std::vector<uint8_t> header_data(sizeof(PacketHeader));
+    std::vector<uint8_t> header_data(HEADER_SERIALIZED_SIZE);
     ssize_t bytes_received = recv(sockfd, reinterpret_cast<char*>(header_data.data()), header_data.size(), 0);
     if (bytes_received <= 0) {
         std::cerr << "client: Failed to receive header or connection closed" << std::endl;
@@ -116,6 +127,7 @@ bool TCPClient::receive_packet(PacketHeader& header, std::vector<uint8_t>& paylo
         return false;
     }
 
+    payload.resize(header.payload_size);
     // 接收 payload
     if (header.payload_size > 0) {
         ssize_t total_received = 0;
@@ -138,7 +150,7 @@ bool TCPClient::receive_packet(PacketHeader& header, std::vector<uint8_t>& paylo
         }
 
         // 全部接收完成
-        std::cout << "server: Successfully received all " << total_received << " bytes" << std::endl;
+        // std::cout << "server: Successfully received all " << total_received << " bytes" << std::endl;
     }
 
     return true;
@@ -177,7 +189,6 @@ bool TCPClient::upload_file(const std::string& local_path,
     header.file_id = 0; // 上传请求时文件ID由服务器分配
     header.block_index = 0;
     header.total_blocks = total_blocks;
-    std::cout << "client: header.payload_size: " << header.payload_size << " bytes" << std::endl;
 
     if (!send_packet(header, serialize_upload_request(req))) {
         std::cerr << "client: Failed to send upload request" << std::endl;
